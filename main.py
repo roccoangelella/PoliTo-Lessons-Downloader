@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import re
+import subprocess
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -10,34 +11,136 @@ from selenium.webdriver.support import expected_conditions as EC
 # --- CONFIGURATION ---
 DOWNLOAD_FOLDER = "polito_videos"
 VIDEO_LOAD_WAIT_TIME = 15  # Generous wait time for the player to appear
+MAX_FILE_SIZE_MB = 200  # Maximum output file size in MB
+AUDIO_BITRATE = "128k"  # Good audio quality (prioritized)
 
 def sanitize_filename(name):
     """Cleans up the text to make it a valid filename."""
     clean = re.sub(r'[^\w\s-]', '', name).strip()
     return clean
 
-def download_file(url, filename, cookies):
+def get_video_duration(filename):
+    """Get video duration in seconds using ffprobe."""
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'default=noprint_wrappers=1:nokey=1', filename],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        return float(result.stdout.strip())
+    except:
+        return None
+
+def compress_video(input_file, output_file, max_size_mb, audio_bitrate="128k"):
+    """Compress video to target size, prioritizing audio quality."""
+    print(f"   [...] Compressing video to max {max_size_mb}MB...")
+    
+    # Get video duration
+    duration = get_video_duration(input_file)
+    if not duration:
+        print("   [!] Could not determine video duration, using conservative compression")
+        video_bitrate = "500k"
+    else:
+        audio_bitrate_kbps = int(audio_bitrate.replace('k', ''))
+        target_total_bitrate = (max_size_mb * 8192) / duration
+        video_bitrate = max(100, int(target_total_bitrate - audio_bitrate_kbps - 50))
+        video_bitrate = f"{video_bitrate}k"
+        duration_mins = duration / 60
+        print(f"   [...] Video: {duration_mins:.1f} mins, target bitrate: {video_bitrate}")
+        print("   [...] Using ULTRAFAST compression (240p, optimized for speed)...")
+    
+    try:
+        # Ultra-fast CPU encoding with minimal resolution
+        cmd = [
+            'ffmpeg',
+            '-i', input_file,
+            '-vf', 'scale=-2:240',           # Scale to 240p (minimal resolution)
+            '-c:v', 'libx264',
+            '-b:v', video_bitrate,
+            '-preset', 'ultrafast',          # Absolute fastest preset
+            '-tune', 'zerolatency',          # Optimize for speed over quality
+            '-crf', '28',                    # Lower quality = faster encoding
+            '-threads', '0',                 # Use all CPU threads
+            '-c:a', 'aac',
+            '-b:a', audio_bitrate,           # Keep audio quality high
+            '-movflags', '+faststart',
+            '-y',
+            output_file
+        ]
+        
+        print("   [...] Encoding started (showing progress)...")
+        result = subprocess.run(cmd)
+        
+        if result.returncode == 0:
+            output_size = os.path.getsize(output_file) / (1024 * 1024)
+            print(f"   [V] Compression complete! Output size: {output_size:.1f}MB")
+            return True
+        else:
+            return False
+    except FileNotFoundError:
+        print("   [X] FFmpeg not found. Please install FFmpeg and add it to PATH.")
+        return False
+    except Exception as e:
+        print(f"   [X] Compression failed: {e}")
+        return False
+
+def download_file(url, filename, cookies, should_compress=True):
+    # Ensure download folder exists
+    os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+    
     local_filename = os.path.join(DOWNLOAD_FOLDER, f"{filename}.mp4")
+    temp_filename = os.path.join(DOWNLOAD_FOLDER, f"{filename}_temp.mp4")
     
     if os.path.exists(local_filename):
         print(f"   [!] File already exists: {local_filename}")
         return
 
-    print(f"   [...] Downloading to {local_filename}...")
+    print(f"   [...] Downloading to temporary file...")
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
 
     try:
+        # Download to temporary file first
         with requests.get(url, stream=True, cookies=cookies, headers=headers) as r:
             r.raise_for_status()
-            with open(local_filename, 'wb') as f:
+            with open(temp_filename, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
         print("   [V] Download complete!")
+        
+        # Check file size and compress if needed
+        file_size_mb = os.path.getsize(temp_filename) / (1024 * 1024)
+        print(f"   [...] Original file size: {file_size_mb:.1f}MB")
+        
+        if should_compress and file_size_mb > MAX_FILE_SIZE_MB:
+            print(f"   [!] File exceeds {MAX_FILE_SIZE_MB}MB, compressing...")
+            if compress_video(temp_filename, local_filename, MAX_FILE_SIZE_MB, AUDIO_BITRATE):
+                # Delete temp file after successful compression
+                os.remove(temp_filename)
+            else:
+                # If compression fails, keep the original
+                print("   [!] Compression failed, keeping original file")
+                os.rename(temp_filename, local_filename)
+        else:
+            # File is small enough or compression disabled, just rename it
+            if not should_compress and file_size_mb > MAX_FILE_SIZE_MB:
+                print(f"   [!] File size: {file_size_mb:.1f}MB (exceeds NotebookLM 200MB limit)")
+            else:
+                print("   [V] File size OK, no compression needed")
+            os.rename(temp_filename, local_filename)
+            
     except Exception as e:
         print(f"   [X] Download failed: {e}")
+        # Clean up temp file if it exists
+        if os.path.exists(temp_filename):
+            try:
+                os.remove(temp_filename)
+            except:
+                pass
 
 def main():
     if not os.path.exists(DOWNLOAD_FOLDER):
@@ -56,6 +159,25 @@ def main():
     print("Navigate to the specific course page so the blue links are visible.")
     print("------------------------------------------------")
     input("Press ENTER here once the page is fully loaded and ready...")
+
+    # Ask about compression preference
+    print("\n------------------------------------------------")
+    print("VIDEO SIZE OPTIONS:")
+    print("Videos larger than 200MB can be compressed (200MB is NotebookLM's max).")
+    print("------------------------------------------------")
+    print("Do you want to compress videos over 200MB?")
+    print("  [1] Yes - Compress to 200MB (prioritizes audio quality)")
+    print("  [2] No - Keep full size (may exceed NotebookLM limit)")
+    print("------------------------------------------------")
+    
+    compress_choice = input("Enter your choice (1 or 2): ").strip()
+    should_compress = compress_choice == "1"
+    
+    if should_compress:
+        print(f"✓ Videos over 200MB will be compressed to 200MB")
+    else:
+        print(f"✓ Videos will be kept at full size")
+    print()
 
     # 3. Collect Unique IDs first (This prevents StaleElementReferenceException)
     print("Scanning for videos...")
@@ -136,7 +258,7 @@ def main():
                 
                 if video_url and (video_url.strip()):
                     clean_name = sanitize_filename(raw_text)
-                    download_file(video_url, clean_name, session_cookies)
+                    download_file(video_url, clean_name, session_cookies, should_compress)
                 else:
                     print(f"   [X] Video URL not found. Found: {video_url}")
 
@@ -157,3 +279,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+#.\.venv\Scripts\python -m main                                                       
