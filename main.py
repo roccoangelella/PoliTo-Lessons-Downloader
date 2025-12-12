@@ -57,29 +57,9 @@ def get_video_duration(filename):
     except:
         return None
 
-def check_nvenc_support():
-    """Check if NVIDIA GPU encoding (NVENC) is available."""
-    try:
-        result = subprocess.run(
-            ['ffmpeg', '-hide_banner', '-encoders'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        return 'h264_nvenc' in result.stdout
-    except:
-        return False
-
 def compress_video(input_file, output_file, max_size_mb, audio_bitrate="128k"):
-    """Compress video to target size, prioritizing audio quality with GPU acceleration."""
+    """Compress video to target size, prioritizing audio quality."""
     print(f"   [...] Compressing video to max {max_size_mb}MB...")
-    
-    # Check for NVENC support
-    use_gpu = check_nvenc_support()
-    if use_gpu:
-        print("   [V] NVIDIA GPU encoding (NVENC) detected - using hardware acceleration!")
-    else:
-        print("   [!] NVENC not available, falling back to CPU encoding")
     
     # Get video duration
     duration = get_video_duration(input_file)
@@ -93,53 +73,26 @@ def compress_video(input_file, output_file, max_size_mb, audio_bitrate="128k"):
         video_bitrate = f"{video_bitrate}k"
         duration_mins = duration / 60
         print(f"   [...] Video: {duration_mins:.1f} mins, target bitrate: {video_bitrate}")
-        if use_gpu:
-            print("   [...] Using GPU-accelerated compression (240p, NVENC)...")
-        else:
-            print("   [...] Using CPU compression (240p, ultrafast)...")
+        print("   [...] Using CPU compression (240p, ultrafast)...")
     
     try:
-        if use_gpu:
-            # Maximum speed GPU encoding - no compromises!
-            cmd = [
-                'ffmpeg',
-                '-i', input_file,
-                '-vf', 'hwupload_cuda,scale_npp=-2:240',  # Upload to GPU + GPU scaling (FAST!)
-                '-c:v', 'h264_nvenc',            # NVIDIA hardware encoder
-                '-b:v', video_bitrate,
-                '-preset', 'p1',                 # Fastest NVENC preset
-                '-tune', 'uhq',                  # Ultra high quality mode (uses all GPU power)
-                '-rc', 'cbr',                    # Constant bitrate (faster than VBR)
-                '-rc-lookahead', '0',            # Disable lookahead for max speed
-                '-temporal-aq', '1',             # Temporal AQ for better quality at high speed
-                '-spatial-aq', '1',              # Spatial AQ 
-                '-gpu', '0',                     # Explicitly use first GPU
-                '-delay', '0',                   # Zero delay
-                '-2pass', '0',                   # Single pass encoding (faster)
-                '-c:a', 'aac',
-                '-b:a', audio_bitrate,
-                '-movflags', '+faststart',
-                '-y',
-                output_file
-            ]
-        else:
-            # Fallback: Ultra-fast CPU encoding
-            cmd = [
-                'ffmpeg',
-                '-i', input_file,
-                '-vf', 'scale=-2:240',           # Scale to 240p (minimal resolution)
-                '-c:v', 'libx264',
-                '-b:v', video_bitrate,
-                '-preset', 'ultrafast',          # Absolute fastest preset
-                '-tune', 'zerolatency',          # Optimize for speed over quality
-                '-crf', '28',                    # Lower quality = faster encoding
-                '-threads', '0',                 # Use all CPU threads
-                '-c:a', 'aac',
-                '-b:a', audio_bitrate,           # Keep audio quality high
-                '-movflags', '+faststart',
-                '-y',
-                output_file
-            ]
+        # Ultra-fast CPU encoding
+        cmd = [
+            'ffmpeg',
+            '-i', input_file,
+            '-vf', 'scale=-2:240',           # Scale to 240p (minimal resolution)
+            '-c:v', 'libx264',
+            '-b:v', video_bitrate,
+            '-preset', 'ultrafast',          # Absolute fastest preset
+            '-tune', 'zerolatency',          # Optimize for speed over quality
+            '-crf', '28',                    # Lower quality = faster encoding
+            '-threads', '0',                 # Use all CPU threads
+            '-c:a', 'aac',
+            '-b:a', audio_bitrate,           # Keep audio quality high
+            '-movflags', '+faststart',
+            '-y',
+            output_file
+        ]
         
         print("   [...] Encoding started (showing progress)...")
         result = subprocess.run(cmd)
