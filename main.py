@@ -100,20 +100,24 @@ def compress_video(input_file, output_file, max_size_mb, audio_bitrate="128k"):
     
     try:
         if use_gpu:
-            # GPU-accelerated encoding with NVIDIA NVENC
+            # Maximum speed GPU encoding - no compromises!
             cmd = [
                 'ffmpeg',
-                '-hwaccel', 'cuda',              # Enable CUDA hardware acceleration
-                '-hwaccel_output_format', 'cuda', # Keep frames on GPU
                 '-i', input_file,
-                '-vf', 'scale_cuda=-2:240',      # GPU-based scaling (much faster!)
+                '-vf', 'hwupload_cuda,scale_npp=-2:240',  # Upload to GPU + GPU scaling (FAST!)
                 '-c:v', 'h264_nvenc',            # NVIDIA hardware encoder
                 '-b:v', video_bitrate,
-                '-preset', 'p1',                 # Fastest NVENC preset (p1-p7, p1 is fastest)
-                '-tune', 'll',                   # Low latency tuning
-                '-rc', 'vbr',                    # Variable bitrate for better quality
+                '-preset', 'p1',                 # Fastest NVENC preset
+                '-tune', 'uhq',                  # Ultra high quality mode (uses all GPU power)
+                '-rc', 'cbr',                    # Constant bitrate (faster than VBR)
+                '-rc-lookahead', '0',            # Disable lookahead for max speed
+                '-temporal-aq', '1',             # Temporal AQ for better quality at high speed
+                '-spatial-aq', '1',              # Spatial AQ 
+                '-gpu', '0',                     # Explicitly use first GPU
+                '-delay', '0',                   # Zero delay
+                '-2pass', '0',                   # Single pass encoding (faster)
                 '-c:a', 'aac',
-                '-b:a', audio_bitrate,           # Keep audio quality high
+                '-b:a', audio_bitrate,
                 '-movflags', '+faststart',
                 '-y',
                 output_file
