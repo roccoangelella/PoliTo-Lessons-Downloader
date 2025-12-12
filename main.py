@@ -19,6 +19,24 @@ def sanitize_filename(name):
     clean = re.sub(r'[^\w\s-]', '', name).strip()
     return clean
 
+def cleanup_temp_files():
+    """Remove all temporary files from interrupted downloads."""
+    if not os.path.exists(DOWNLOAD_FOLDER):
+        return
+    
+    temp_files = [f for f in os.listdir(DOWNLOAD_FOLDER) if f.endswith('_temp.mp4')]
+    if temp_files:
+        print(f"Found {len(temp_files)} interrupted download(s), cleaning up...")
+        for temp_file in temp_files:
+            temp_path = os.path.join(DOWNLOAD_FOLDER, temp_file)
+            try:
+                os.remove(temp_path)
+                print(f"   [V] Deleted: {temp_file}")
+            except Exception as e:
+                print(f"   [!] Could not delete {temp_file}: {e}")
+    else:
+        print("No interrupted downloads found.")
+
 def get_video_duration(filename):
     """Get video duration in seconds using ffprobe."""
     try:
@@ -93,8 +111,10 @@ def download_file(url, filename, cookies, should_compress=True):
     local_filename = os.path.join(DOWNLOAD_FOLDER, f"{filename}.mp4")
     temp_filename = os.path.join(DOWNLOAD_FOLDER, f"{filename}_temp.mp4")
     
+    # Check if the final file already exists
     if os.path.exists(local_filename):
-        print(f"   [!] File already exists: {local_filename}")
+        file_size_mb = os.path.getsize(local_filename) / (1024 * 1024)
+        print(f"   [V] Already downloaded ({file_size_mb:.1f}MB) - Skipping")
         return
 
     print(f"   [...] Downloading to temporary file...")
@@ -145,6 +165,11 @@ def download_file(url, filename, cookies, should_compress=True):
 def main():
     if not os.path.exists(DOWNLOAD_FOLDER):
         os.makedirs(DOWNLOAD_FOLDER)
+    
+    # Clean up any interrupted downloads
+    print("Checking for interrupted downloads...")
+    cleanup_temp_files()
+    print()
 
     print("Launching Chrome...")
     driver = webdriver.Chrome()
