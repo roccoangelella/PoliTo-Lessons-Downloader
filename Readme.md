@@ -15,5 +15,5 @@ Install the required Python libraries:
 pip install selenium requests
 ```
 
-#### Warning:
+### Warning:
 Downscaling with FFMPEG will destroy the video's quality, which is fine if you just want to feed it into NotebookLM.
