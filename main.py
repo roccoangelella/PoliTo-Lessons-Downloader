@@ -20,20 +20,26 @@ def sanitize_filename(name):
     return clean
 
 def cleanup_temp_files():
-    """Remove all temporary files from interrupted downloads."""
+    """Remove all temporary files from interrupted downloads across all batch folders."""
     if not os.path.exists(DOWNLOAD_FOLDER):
         return
     
-    temp_files = [f for f in os.listdir(DOWNLOAD_FOLDER) if f.endswith('_temp.mp4')]
-    if temp_files:
-        print(f"Found {len(temp_files)} interrupted download(s), cleaning up...")
-        for temp_file in temp_files:
-            temp_path = os.path.join(DOWNLOAD_FOLDER, temp_file)
+    temp_files_found = []
+    
+    # Check all subfolders for temp files
+    for root, dirs, files in os.walk(DOWNLOAD_FOLDER):
+        for file in files:
+            if file.endswith('_temp.mp4'):
+                temp_files_found.append(os.path.join(root, file))
+    
+    if temp_files_found:
+        print(f"Found {len(temp_files_found)} interrupted download(s), cleaning up...")
+        for temp_path in temp_files_found:
             try:
                 os.remove(temp_path)
-                print(f"   [V] Deleted: {temp_file}")
+                print(f"   [V] Deleted: {os.path.basename(temp_path)}")
             except Exception as e:
-                print(f"   [!] Could not delete {temp_file}: {e}")
+                print(f"   [!] Could not delete {os.path.basename(temp_path)}: {e}")
     else:
         print("No interrupted downloads found.")
 
@@ -51,9 +57,29 @@ def get_video_duration(filename):
     except:
         return None
 
+def check_nvenc_support():
+    """Check if NVIDIA GPU encoding (NVENC) is available."""
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-hide_banner', '-encoders'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        return 'h264_nvenc' in result.stdout
+    except:
+        return False
+
 def compress_video(input_file, output_file, max_size_mb, audio_bitrate="128k"):
-    """Compress video to target size, prioritizing audio quality."""
+    """Compress video to target size, prioritizing audio quality with GPU acceleration."""
     print(f"   [...] Compressing video to max {max_size_mb}MB...")
+    
+    # Check for NVENC support
+    use_gpu = check_nvenc_support()
+    if use_gpu:
+        print("   [V] NVIDIA GPU encoding (NVENC) detected - using hardware acceleration!")
+    else:
+        print("   [!] NVENC not available, falling back to CPU encoding")
     
     # Get video duration
     duration = get_video_duration(input_file)
@@ -67,26 +93,49 @@ def compress_video(input_file, output_file, max_size_mb, audio_bitrate="128k"):
         video_bitrate = f"{video_bitrate}k"
         duration_mins = duration / 60
         print(f"   [...] Video: {duration_mins:.1f} mins, target bitrate: {video_bitrate}")
-        print("   [...] Using ULTRAFAST compression (240p, optimized for speed)...")
+        if use_gpu:
+            print("   [...] Using GPU-accelerated compression (240p, NVENC)...")
+        else:
+            print("   [...] Using CPU compression (240p, ultrafast)...")
     
     try:
-        # Ultra-fast CPU encoding with minimal resolution
-        cmd = [
-            'ffmpeg',
-            '-i', input_file,
-            '-vf', 'scale=-2:240',           # Scale to 240p (minimal resolution)
-            '-c:v', 'libx264',
-            '-b:v', video_bitrate,
-            '-preset', 'ultrafast',          # Absolute fastest preset
-            '-tune', 'zerolatency',          # Optimize for speed over quality
-            '-crf', '28',                    # Lower quality = faster encoding
-            '-threads', '0',                 # Use all CPU threads
-            '-c:a', 'aac',
-            '-b:a', audio_bitrate,           # Keep audio quality high
-            '-movflags', '+faststart',
-            '-y',
-            output_file
-        ]
+        if use_gpu:
+            # GPU-accelerated encoding with NVIDIA NVENC
+            cmd = [
+                'ffmpeg',
+                '-hwaccel', 'cuda',              # Enable CUDA hardware acceleration
+                '-hwaccel_output_format', 'cuda', # Keep frames on GPU
+                '-i', input_file,
+                '-vf', 'scale_cuda=-2:240',      # GPU-based scaling (much faster!)
+                '-c:v', 'h264_nvenc',            # NVIDIA hardware encoder
+                '-b:v', video_bitrate,
+                '-preset', 'p1',                 # Fastest NVENC preset (p1-p7, p1 is fastest)
+                '-tune', 'll',                   # Low latency tuning
+                '-rc', 'vbr',                    # Variable bitrate for better quality
+                '-c:a', 'aac',
+                '-b:a', audio_bitrate,           # Keep audio quality high
+                '-movflags', '+faststart',
+                '-y',
+                output_file
+            ]
+        else:
+            # Fallback: Ultra-fast CPU encoding
+            cmd = [
+                'ffmpeg',
+                '-i', input_file,
+                '-vf', 'scale=-2:240',           # Scale to 240p (minimal resolution)
+                '-c:v', 'libx264',
+                '-b:v', video_bitrate,
+                '-preset', 'ultrafast',          # Absolute fastest preset
+                '-tune', 'zerolatency',          # Optimize for speed over quality
+                '-crf', '28',                    # Lower quality = faster encoding
+                '-threads', '0',                 # Use all CPU threads
+                '-c:a', 'aac',
+                '-b:a', audio_bitrate,           # Keep audio quality high
+                '-movflags', '+faststart',
+                '-y',
+                output_file
+            ]
         
         print("   [...] Encoding started (showing progress)...")
         result = subprocess.run(cmd)
@@ -104,12 +153,15 @@ def compress_video(input_file, output_file, max_size_mb, audio_bitrate="128k"):
         print(f"   [X] Compression failed: {e}")
         return False
 
-def download_file(url, filename, cookies, should_compress=True):
-    # Ensure download folder exists
-    os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+def download_file(url, filename, cookies, should_compress=True, download_folder=None):
+    # Use provided folder or default
+    target_folder = download_folder if download_folder else DOWNLOAD_FOLDER
     
-    local_filename = os.path.join(DOWNLOAD_FOLDER, f"{filename}.mp4")
-    temp_filename = os.path.join(DOWNLOAD_FOLDER, f"{filename}_temp.mp4")
+    # Ensure download folder exists
+    os.makedirs(target_folder, exist_ok=True)
+    
+    local_filename = os.path.join(target_folder, f"{filename}.mp4")
+    temp_filename = os.path.join(target_folder, f"{filename}_temp.mp4")
     
     # Check if the final file already exists
     if os.path.exists(local_filename):
@@ -169,6 +221,23 @@ def main():
     # Clean up any interrupted downloads
     print("Checking for interrupted downloads...")
     cleanup_temp_files()
+    print()
+
+    # Ask for batch folder name
+    print("------------------------------------------------")
+    print("BATCH ORGANIZATION")
+    print("Videos will be organized into a subfolder.")
+    print("------------------------------------------------")
+    batch_name = input("Enter a name for this batch folder (e.g., 'Lesson_Week1', 'Chapter3'): ").strip()
+    
+    if not batch_name:
+        batch_name = f"batch_{int(time.time())}"
+        print(f"No name provided, using: {batch_name}")
+    
+    # Create batch-specific folder
+    batch_folder = os.path.join(DOWNLOAD_FOLDER, sanitize_filename(batch_name))
+    os.makedirs(batch_folder, exist_ok=True)
+    print(f"Videos will be saved to: {batch_folder}")
     print()
 
     print("Launching Chrome...")
@@ -283,7 +352,7 @@ def main():
                 
                 if video_url and (video_url.strip()):
                     clean_name = sanitize_filename(raw_text)
-                    download_file(video_url, clean_name, session_cookies, should_compress)
+                    download_file(video_url, clean_name, session_cookies, should_compress, batch_folder)
                 else:
                     print(f"   [X] Video URL not found. Found: {video_url}")
 
